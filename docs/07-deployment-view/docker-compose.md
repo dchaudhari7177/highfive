@@ -87,6 +87,26 @@ After startup the services are available on the following ports:
 
 The web-interface itself is reachable under: http://localhost:5173
 
+> **DuckDB Service is LAN-reachable in dev, and loopback-only in prod.**
+> It is the sole DB writer and its internal endpoints (`/new_module`,
+> `/heartbeat`, `DELETE /modules/:id`, …) are unauthenticated by design,
+> so `docker-compose.prod.yml` binds it to `127.0.0.1` and lets host-Nginx
+> proxy the only two paths the fleet needs.
+>
+> **Dev cannot do the same**, because there is no Nginx in the dev stack and
+> the ESP talks to this port directly: `ESP32-CAM/extra_scripts.py` bakes
+> `HF_INIT_URL_DEFAULT = http://<DEV_SERVER_HOST>:8002/new_module` into every
+> LAN-dev build, `esp_init.cpp`'s `initNewModuleOnServer` registers against
+> it, and `client.cpp`'s `sendHeartbeat` reuses the same URL "purely as the
+> carrier of host+port". A loopback bind here removes the module's only route
+> in — registration fails and heartbeats stop, silently.
+>
+> **So treat the dev stack as trusted-LAN-only.** On café or untrusted office
+> Wi-Fi, either don't run it or drop the `8002` port mapping in
+> `docker-compose.yml` and accept that no ESP can register while it's gone.
+> The 2026-07 audit (#203) originally bound this to loopback in dev too; that
+> was reverted because it broke the hardware bench with no replacement path.
+
 > **Backend port — 3002 by default.** `backend/src/server.ts` reads
 > the `PORT` env var through `backend/src/port.ts`'s `resolvePort()`,
 > which falls back to `3002` when `PORT` is unset, empty, or
