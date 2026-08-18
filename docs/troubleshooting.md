@@ -258,6 +258,144 @@ spec files rather than a number memorised from a doc:
 
 ---
 
+## Production host access (SSH)
+
+### `ssh highfive` → "Permission denied (publickey)" — and then port 22 stops answering entirely
+
+Two separate failures that look like one, and the second is self-inflicted.
+
+**Start here — one offline command answers it.** `ssh -G` prints the
+fully-resolved config and **sends no packets**, so it works even while you are
+banned and it costs you no auth attempt:
+
+```powershell
+ssh -G highfive | Select-String '^user |^hostname |^identityfile '
+# user jdoe                              <- your Windows login = the bug
+# hostname highfive.schutera.com
+```
+
+**1. No `User` in the SSH config.** If `~/.ssh/config` pins only `HostName`,
+OpenSSH falls back to the *local* account name — on Windows, `$env:USERNAME`.
+That account does not exist on the server, so even a correctly installed key
+gets `Permission denied (publickey)`. Your key is only half the credential; the
+login name is the other half, and it is **not** derivable from the key comment
+or your email. Ask the server owner — do not guess, for the reason below.
+
+**2. Guessing the username gets your IP banned.** Repeated failed auth trips
+the host's brute-force protection, and it blocks **port 22 only** while
+everything else keeps serving:
+
+```powershell
+(Invoke-WebRequest https://highfive.schutera.com/ -UseBasicParsing -TimeoutSec 15).StatusCode         # 200
+Test-NetConnection highfive.schutera.com -Port 22 -InformationLevel Quiet -WarningAction SilentlyContinue  # False
+Test-NetConnection github.com -Port 22 -InformationLevel Quiet -WarningAction SilentlyContinue            # control
+```
+
+Read all three together — **the third line is what stops you filing the wrong
+problem**:
+
+| HTTPS | highfive:22 | github:22 | Verdict                                                    |
+| ----- | ----------- | --------- | ---------------------------------------------------------- |
+| 200   | False       | **True**  | You are blocked by that host — banned.                     |
+| 200   | False       | **False** | *Your* network blocks outbound tcp/22 (corp LAN, VPN, hotel). Not a ban. |
+| fails | False       | either    | Genuine outage — escalate normally.                        |
+
+Without the control probe, a corporate egress block looks exactly like a ban,
+and you ask the owner to unban an address that was never banned.
+
+> **`MaxAuthTries` and a ban are different things.** `MaxAuthTries` (sshd)
+> closes one *connection* after N auth attempts; reconnect and you get a fresh
+> prompt. A **ban** (fail2ban, sshguard, or a cloud firewall rule) blocks the
+> address at the firewall — dropped or rejected depending on the action, so you
+> may see either a timeout or an instant "connection refused". Either way sshd
+> never sees the attempt. Which mechanism runs on this host has not been
+> confirmed from the outside; the observed behaviour was port 22 going dead
+> after a handful of failed logins in quick succession.
+
+**Fix.** Get the login name from the owner, then add the stanza. Do **not**
+blindly append: appending to a file with no trailing newline welds
+`Host highfive` onto the previous line (a fatal parse error for *every* `ssh`
+invocation, not just this host), and a `Host *` block earlier in the file wins
+regardless — verified with `ssh -G`, an earlier `Host *` / `User git` beats a
+later `Host highfive` / `User realname`.
+
+```powershell
+$sshUser = "the-name-the-owner-gave-you"   # <- replace this first
+$cfg     = "$env:USERPROFILE\.ssh\config"
+
+if ($sshUser -eq "the-name-the-owner-gave-you") {
+  Write-Host "Set `$sshUser to the real login name first — nothing was written." -ForegroundColor Yellow
+}
+elseif (Test-Path $cfg) {
+  Write-Host "Existing config — add these three lines BY HAND, ABOVE any 'Host *' block:"
+  Write-Host "Host highfive"
+  Write-Host "    HostName highfive.schutera.com"
+  Write-Host "    User $sshUser"
+  notepad $cfg
+}
+else {
+  New-Item -ItemType Directory -Force (Split-Path $cfg) | Out-Null
+  "Host highfive`n    HostName highfive.schutera.com`n    User $sshUser" |
+    Out-File -Encoding ascii $cfg     # ASCII = no BOM; PowerShell's default > writes UTF-16
+}
+```
+
+The placeholder check is an `if`/`elseif`, not a `throw`, on purpose: pasted
+line-by-line into a console, a `throw` prints red and execution **continues**
+into the write — producing a config that looks fixed while sending a name
+indistinguishable from a guess. Verified.
+
+Add `IdentityFile ~/.ssh/id_ed25519` **only if that key exists** — pinning it
+overrides the defaults, so naming a missing key turns a working `id_rsa` setup
+into another failed auth attempt. Check with
+`Get-ChildItem $env:USERPROFILE\.ssh\*.pub`.
+
+Confirm the config resolves before you connect — still offline, still free:
+
+```powershell
+ssh -G highfive | Select-String '^user |^hostname '   # must show the owner-supplied name
+```
+
+**If you are already banned, stop retrying.** Not because retries extend the
+ban — they cannot; the firewall blocks the packet before sshd logs anything, so
+nothing re-triggers the filter — but because they accomplish nothing while it
+is active, and re-offending after it expires can earn a longer one where
+fail2ban's (off-by-default) `bantime.increment` is enabled. Wait it out
+(default `bantime` is 10 minutes; prod hosts are often configured far longer),
+or ask the owner to unban you. They read the address off the host, which beats
+you looking up your own egress IP — behind a proxy a client-side lookup reports
+the *proxy's* address while `ssh` leaves from a different one:
+
+```bash
+# owner runs, ON the host:
+sudo fail2ban-client status sshd     # "Banned IP list:" — then:
+sudo fail2ban-client set sshd unbanip THE_IP_FROM_THAT_LIST
+```
+
+> **If the owner is the one locked out**, `fail2ban-client` is unreachable —
+> it needs a shell on the host. Use the hosting provider's out-of-band console
+> (serial / VNC / "rescue mode" in the provider panel), which bypasses sshd
+> entirely, or wait out the `bantime`. Provision that console access *before*
+> you need it.
+
+Then verify with a **single** real connection — not a loop. `-v` here, not
+`-o BatchMode=yes`: BatchMode suppresses passphrase and host-key prompts, so an
+unloaded agent identity fails with `Permission denied (publickey)`,
+byte-identical to the error you are diagnosing, and you would try again.
+
+```powershell
+ssh -v highfive "id -un; hostname"
+```
+
+To see which public key you offered (only the type and base64 blob need to
+match `authorized_keys` — sshd ignores the trailing comment):
+
+```powershell
+Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub
+```
+
+---
+
 ## ESP32-CAM hardware
 
 ### Do I need an FTDI adapter to flash?
