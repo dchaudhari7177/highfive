@@ -992,33 +992,76 @@ now spell out that `version != my_version` is a hard AND condition and
 that "differ" means differ from every codename still alive in the field,
 not just the last release.
 
-### `production` branch drifted from the deployed services (undocumented deploy source)
+### `production` branch drifted from the deployed services (RESOLVED #152)
 
 **What happened.** While auditing the OTA-release docs, `origin/production`
 — the branch
 [`production-deployment.md`](../07-deployment-view/production-deployment.md)
-names as the prod services source — was found sitting far behind `main`
-with a divergent history, while the **live** services clearly run
+named as the prod services source — was found sitting far behind `main`
+with a divergent history, while the **live** services clearly ran
 `main`-only code: e.g. the #142 admin-session endpoints
 (`POST /api/admin/login`) respond in production, and that commit is on
-`main` but not on `production`. So the documented deploy source does not
-match what is actually deployed.
+`main` but not on `production`. So the documented deploy source did not
+match what was actually deployed.
 
-**Why it happened.** Two deploy tracks share the repo — firmware OTA (cut
-on `main` + `prod-*` tags) and the Docker services (documented as
-deployed from `production`). The services track was evidently re-pointed
-at `main` (or deployed ad hoc) without updating the `production` branch
-or the doc, so the branch became a stale artifact that still reads as
-authoritative.
+**Why it happened — the deeper cause.** Nothing kept `production` current
+and nothing failed when it stopped being current. The services deploy
+source was quietly re-pointed at `main`, no one fast-forwarded or retired
+`production`, and because no check ever compared the documented source to
+the live one, a branch that had stopped meaning anything went on reading as
+authoritative for two months. **A deploy branch with no promotion mechanism
+and no staleness signal is a stale artifact waiting to happen** — the
+absence of a forcing function is the whole cause.
 
-**How to avoid it next time.** Pick and document one services deploy
-source. If services now deploy from `main`, update
-[`production-deployment.md`](../07-deployment-view/production-deployment.md)
-and retire the `production` branch; if `production` is still intended,
-fast-forward it on every services deploy. Until reconciled, do not trust
-the `production` branch as a picture of prod. Firmware OTA is unaffected
-(it lives on `main` + `prod-*` tags) — see
-[`firmware-release.md` → Git: branch & tag model](../07-deployment-view/firmware-release.md#git-branch--tag-model).
+> **Correction (PR #194 review) — and a lesson in its own right.** The
+> original version of this entry blamed something else entirely: that `main`
+> and `production` "shared **no common git ancestor**" because `main`'s
+> history had been rebuilt into an orphan root, making a fast-forward
+> *structurally impossible*. That is false. Verified:
+>
+> ```
+> git rev-list --max-parents=0 main    → d9ac93d  (2025-06-24, exactly one root)
+> git rev-list --max-parents=0 bf8b314 → d9ac93d  (the SAME root)
+> git merge-base main bf8b314          → da1b21d  (2026-04-26)
+> ```
+>
+> One shared root, a real merge base, 25 divergent commits — an ordinary
+> merge was available the whole time. The cited `#124` is `f6a89c8`, a
+> senior-reviewer config commit with nothing to do with history rewriting.
+>
+> **Why this is worth keeping rather than quietly editing:** the false
+> narrative was the *only* recorded justification for force-resetting a
+> release branch and discarding 25 commits, and it had already been
+> generalised into a "how to avoid this next time" rule below — a rule
+> future maintainers would have applied to a scenario that never happened.
+> A post-mortem's root cause gets acted on; an unverified one gets acted on
+> just as hard. `git merge-base` would have taken five seconds. This is
+> CLAUDE.md's "never trust commit messages over code" rule failing in the
+> one document type whose entire purpose is to be trusted later.
+
+**Resolution (#152, [ADR-030](../09-architecture-decisions/adr-030-production-as-gated-release-branch.md)).**
+Adopted `production` as the single **gated release branch** for both web
+services and firmware OTA. The old branch was archived (tag
+`archive/production-2026-05-02` → `bf8b314`) and `production` force-reset
+onto `main`'s history, after which every promotion is a clean fast-forward.
+**Note the archive tag is local-only until pushed** (`git ls-remote --tags
+origin | grep archive` returns nothing) — those 25 commits currently survive
+on the remote only because a stale feature branch happens to contain
+`bf8b314`, which `clean_gone` would delete. Run
+`git push origin archive/production-2026-05-02` to make the recovery point
+real. `scripts/deploy.sh` now tracks `production`
+(`BRANCH=production`), and the deploy docs describe the
+promote-then-auto-deploy flow.
+
+**How to avoid the class of bug next time.** A deploy branch needs a
+promotion mechanism and a staleness signal; without both it stops meaning
+anything and nothing tells you. Secondarily, it must remain a fast-forward
+descendant of the integration line — if a
+history rewrite (squash, filter, re-root) ever disconnects them, **either
+reconcile immediately or retire the orphaned branch**; never leave a
+branch that is documented as authoritative but is structurally incapable
+of catching up. When repointing the live deploy source, update the branch,
+the docs, and `scripts/deploy.sh` in the same change.
 
 ### Production API key shipped in the public JS bundle; the `/admin` gate authenticated nothing (issue #142)
 

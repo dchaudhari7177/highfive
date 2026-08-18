@@ -331,8 +331,13 @@ pm2 startup
 
 ## Updates & Redeployment
 
+The `production` branch is the **gated release branch** (#152): `main` is the
+integration line, and a release is a fast-forward of `production` onto a chosen
+`main` commit — `git push origin <main-sha>:production` from a maintainer's
+clone. The host only ever **pulls** `production`.
+
 > The host normally self-deploys via [`scripts/deploy.sh`](../../scripts/deploy.sh)
-> (auto-deploy driver — pulls `main`, installs deps, rebuilds only what changed,
+> (auto-deploy driver — pulls `production`, installs deps, rebuilds only what changed,
 > reloads the affected pm2 apps, health-checks, rolls back on failure; the
 > `highfive-deploy.timer` may be inactive). The manual steps below are a
 > **simplified hand-deploy**, not a faithful replay — use them for a recovery.
@@ -376,7 +381,7 @@ part, the Nginx-served `homepage/dist`, is static files rather than a pm2 app.
 
 ```bash
 cd /var/www/highfive
-git pull --ff-only origin main
+git pull --ff-only origin production   # the gated release branch (#152), NOT main
 
 # 1) Node deps — npm WORKSPACES monorepo, so install from the ROOT. A new
 #    backend/homepage dep lands in the ROOT package-lock.json; a per-package

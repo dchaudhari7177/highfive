@@ -2,7 +2,8 @@
 # =============================================================================
 # scripts/deploy.sh — HiveHive auto-deploy driver
 #
-# Run by the highfive-deploy.timer systemd unit (every 2 min). Pulls origin/main,
+# Run by the highfive-deploy.timer systemd unit (every 2 min). Pulls
+# origin/production (the gated release branch — see BRANCH below and #152),
 # rebuilds ONLY what changed, reloads the affected pm2 services, health-checks,
 # and rolls back to the previous version on any failure. For firmware-source
 # changes it auto-bumps SEQUENCE + codename and publishes the OTA (test-gated:
@@ -10,8 +11,8 @@
 # current firmware). Sends a Discord notification on every real deploy.
 #
 # Design notes:
-#   * Idempotent + timer-safe: flock-guarded, exits SILENTLY when main is
-#     unchanged (the 99% case — no Discord spam).
+#   * Idempotent + timer-safe: flock-guarded, exits SILENTLY when production
+#     is unchanged (the 99% case — no Discord spam).
 #   * "Fail gracefully": services are built before being reloaded, and a
 #     post-reload health failure rolls the working tree + build artifacts back
 #     to PREV_SHA and reloads again, so the OLD version keeps running.
@@ -41,7 +42,18 @@ DEPLOYLOG="$LOGDIR/deploy.log"
 # Records the SHA of a deploy that failed, so the 2-minute timer does not
 # retry a known-broken commit (and re-wipe node_modules) forever.
 FAILED_MARKER="$LOGDIR/last-failed-sha"
-BRANCH="main"
+# One-shot marker so the wrong-branch alert fires once per wrong branch, not
+# once every two minutes. Cleared as soon as the checkout matches BRANCH.
+BRANCH_MARKER="$LOGDIR/branch-mismatch-notified"
+# Services + firmware deploy from the gated `production` branch (#152). `main` is
+# the integration line; a release is `git push origin <sha>:production` (a
+# fast-forward), which this timer then deploys. Firmware OTA bumps + prod-* tags
+# ride this branch too — see docs/07-deployment-view/firmware-release.md.
+#
+# NOTE the host-side precondition below: main() exits early when the checkout is
+# not ON this branch, so until the prod host runs `git checkout production` this
+# script no-ops on every tick.
+BRANCH="production"
 
 DUCKDB_BASE="http://127.0.0.1:8000"
 IMAGE_BASE="http://127.0.0.1:4444"
@@ -257,9 +269,9 @@ publish_firmware() {
     -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
   PREV_SHA="$(git rev-parse HEAD)"   # a later step must never git-reset away a live OTA
   if git push --quiet origin "$BRANCH" && git tag -a "prod-$new_ver" -m "auto OTA $new_ver/seq$new_seq" && git push --quiet origin "prod-$new_ver"; then
-    notify firmware "FLEET OTA PUBLISHED: $new_ver / seq$new_seq" "Forward-only, NO field rollback. app_size $m_size. Devices flip on next daily reboot. Tag prod-$new_ver."
+    notify firmware "FLEET OTA PUBLISHED: $new_ver / seq$new_seq" "Forward-only, NO field rollback. app_size $m_size. Devices flip on next daily reboot. Tag prod-$new_ver. NOTE: bump committed to $BRANCH only — MERGE it back to main -- FROM A MAINTAINER CLONE, NOT THIS HOST (git checkout main on the host would trip the branch-mismatch guard and pause every deploy): git fetch origin; git checkout main; git merge origin/$BRANCH; git push origin main. Otherwise the next promotion will not fast-forward. A cherry-pick will NOT work -- see ADR-030 and issue #225."
   else
-    notify firmware "FLEET OTA PUBLISHED (bump push FAILED)" "$new_ver/seq$new_seq is LIVE in the manifest, but pushing the bump to main failed — main is out of sync, reconcile by hand."
+    notify firmware "FLEET OTA PUBLISHED (bump push FAILED)" "$new_ver/seq$new_seq is LIVE in the manifest, but pushing the bump to $BRANCH failed — $BRANCH is out of sync, reconcile by hand (and merge the bump back to main)."
   fi
   echo "published $new_ver/seq$new_seq"
 }
@@ -274,7 +286,26 @@ main() {
   if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
 
   local cur_branch; cur_branch="$(git rev-parse --abbrev-ref HEAD)"
-  if [ "$cur_branch" != "$BRANCH" ]; then log "skip: on '$cur_branch', not '$BRANCH'"; exit 0; fi
+  if [ "$cur_branch" != "$BRANCH" ]; then
+    # Notify ONCE, then stay quiet. Before #152 this was a bare `log` + exit 0,
+    # which is fine when it never happens — but flipping BRANCH from `main` to
+    # `production` makes it happen on every tick until someone runs
+    # `git checkout production` on the host. A silent stop is the worst
+    # possible failure here: deploys simply cease, nothing alerts, and `main`
+    # keeps accumulating commits nobody notices are unshipped. The marker file
+    # keeps it to one Discord message rather than one every two minutes.
+    if [ ! -f "$BRANCH_MARKER" ] || [ "$(cat "$BRANCH_MARKER" 2>/dev/null)" != "$cur_branch" ]; then
+      # Marker BEFORE notify: notify can fail (unwritable log + failing webhook)
+      # and under `set -e` that would kill main() before the marker lands,
+      # producing this alert every two minutes — exactly what it prevents.
+      printf '%s' "$cur_branch" > "$BRANCH_MARKER" 2>/dev/null || true
+      notify fail "Auto-deploy PAUSED — wrong branch checked out" \
+        "$REPO is on '$cur_branch' but this deploy driver tracks '$BRANCH'. No deploys will run until the host is switched."$'\n\n'"ORDER MATTERS — verify the promotion FIRST, or you roll production backwards:"$'\n'"  1) git fetch origin && git show origin/$BRANCH:scripts/deploy.sh | grep '^BRANCH='"$'\n'"     -> must print BRANCH=\"$BRANCH\". If it prints \"main\", promote first:"$'\n'"        git push origin <main-sha>:$BRANCH"$'\n'"  2) cd $REPO && git fetch origin && git checkout $BRANCH && git reset --hard origin/$BRANCH"$'\n\n'"Doing (2) before (1) reverts the live services AND deletes this alert."$'\n'"See docs/07-deployment-view/production-deployment.md -> One-time cutover."
+    fi
+    log "skip: on '$cur_branch', not '$BRANCH'"
+    exit 0
+  fi
+  rm -f "$BRANCH_MARKER" 2>/dev/null || true
   if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     notify fail "Deploy BLOCKED — dirty working tree" "Uncommitted tracked changes in $REPO; auto-deploy won't touch them. Resolve by hand."
     exit 1
@@ -305,7 +336,7 @@ main() {
   author="$(git log -1 --pretty='%an' "$REMOTE_SHA")"
 
   if ! git pull --ff-only --quiet origin "$BRANCH"; then
-    notify fail "Deploy BLOCKED — main not fast-forwardable" "origin/$BRANCH diverged from local. Manual intervention needed."
+    notify fail "Deploy BLOCKED — $BRANCH not fast-forwardable" "origin/$BRANCH diverged from local. A release must be a fast-forward of production onto a main commit; reconcile by hand."
     exit 1
   fi
   CHANGED="$(git diff --name-only "$PREV_SHA..HEAD")"

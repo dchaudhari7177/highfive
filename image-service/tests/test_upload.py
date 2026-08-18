@@ -468,9 +468,9 @@ def test_upload_over_throttle_discards_with_200(
     )
     assert second.status_code == 200
     assert second.get_json()["message"] == "Upload rate exceeded — discarded"
-    assert (
-        sorted(p.name for p in tmp_upload_dir.glob("*")) == persisted_after_first
-    ), "a discarded upload must not persist anything"
+    assert sorted(p.name for p in tmp_upload_dir.glob("*")) == persisted_after_first, (
+        "a discarded upload must not persist anything"
+    )
 
 
 def test_upload_throttle_is_per_mac(app, client, tmp_upload_dir: Path, upload_env):
@@ -487,6 +487,7 @@ def test_upload_throttle_is_per_mac(app, client, tmp_upload_dir: Path, upload_en
         content_type="multipart/form-data",
     )
     assert other.status_code == 200
-    assert "message" not in (other.get_json() or {}) or other.get_json().get(
-        "message"
-    ) != "Upload rate exceeded — discarded"
+    assert (
+        "message" not in (other.get_json() or {})
+        or other.get_json().get("message") != "Upload rate exceeded — discarded"
+    )
