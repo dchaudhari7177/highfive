@@ -47,6 +47,24 @@ fixed in commit `778c9b1`. Don't reintroduce them.
   `ESP32-CAM/GEO_API_KEY` file fallback. Full mechanism:
   [`docs/08-crosscutting-concepts/auth.md`](../08-crosscutting-concepts/auth.md#third-party-api-keys-geolocation).
   The original key remains in git history and must stay revoked.
+- **Wi-Fi credential** — a commented-out `WiFi.begin("<SSID>",
+  "<passphrase>")` bench line sat in `ESP32-CAM/esp_init.cpp`'s
+  `setupWifiConnection`, one line below the real config-driven
+  `WiFi.begin(wifi_config->SSID, wifi_config->PASSWORD)` call, since the
+  very first firmware commit (`f5dc06d`, 2026-02-23). Found in the
+  2026-08-18 audit ([issue #227](https://github.com/schutera/highfive/issues/227)).
+  It was never compiled into a shipped `firmware.bin` (comment-only), but
+  the source text itself is the leak in a public repo — same lesson as
+  the Geolocation key above: rotate the credential (out-of-repo,
+  maintainer-only) and treat deletion from the working tree as cleanup,
+  not mitigation. `scripts/check-no-hardcoded-api-keys.sh` gained a third
+  pattern for a two-literal `WiFi.begin("...", "...")` call so this exact
+  shape is caught **at pre-push time**; it is not yet a CI gate (that gap
+  is tracked in #210 for all three patterns), and it does not cover
+  `ESP32-CAM/host.cpp`'s intentional captive-portal AP PSK (`WiFi.softAP`
+  — see [auth.md → "Captive-portal credential handling"](../08-crosscutting-concepts/auth.md#captive-portal-credential-handling)).
+  See also the related **WiFi password printed plaintext to Serial**
+  entry below (#41) — same function, a different leak vector.
 - **Dev API key fallback** `hf_dev_key_2026` in
   [`backend/src/auth.ts`'s `DEV_FALLBACK_KEY`](../../backend/src/auth.ts)
   — intentional for local dev. Must be overridden via `HIGHFIVE_API_KEY`
@@ -3930,3 +3948,11 @@ The seed value lives in the schema, has a plausible-looking name, and never wins
 Also note `HUSKY=0` on the deploy's `npm ci`: the root `package.json` declares `"prepare": "husky"`, so a root install on the host would set `core.hooksPath` and make deploy.sh's *own* `git commit` in `publish_firmware` fire developer pre-commit hooks — an unguarded call, so a hook failure would kill the script mid-firmware-publish and brick every later tick on the dirty-tree check.
 
 One sharp edge remains by design: rollback does **not** downgrade a pip-_upgraded_ shared dep, so a forward bump (e.g. `numpy` → 2.x via ADR-029's float) is sticky across a rollback.
+
+### A secrets guard scoped to one leak's shape missed the next leak sitting 188 lines away (#18 vs #227)
+
+**What happened.** [Issue #18](https://github.com/schutera/highfive/issues/18) leaked a Google Geolocation API key as a string literal in `ESP32-CAM/esp_init.cpp`. Its fix (`07c10ac`, 2026-05-11) removed the key and added a pre-push guard, `scripts/check-no-hardcoded-api-keys.sh`, matching the pattern `AIza[0-9A-Za-z_-]{20,}`. At that point the leaked-and-since-removed API key literal had sat 188 lines away, in the same file, from a second, unrelated credential — a real home Wi-Fi SSID and passphrase, commented into a `WiFi.begin("...", "...")` bench line. The guard ran clean on every push for roughly three months while that second credential sat there undetected, until the 2026-08-18 audit found it by eye ([#227](https://github.com/schutera/highfive/issues/227)).
+
+**Why it happened.** The #18 guard is a *value*-shaped detector: it recognizes what a Google API key looks like. A Wi-Fi passphrase has no recognizable value shape — no prefix, no fixed length, no charset tell. The only thing distinguishing this leak from ordinary code was its *call* shape: two string literals passed to `WiFi.begin(...)`. Adding a guard for one secret class creates a false sense that "we have a secrets guard now," but each new secret class needs its own, independently-derived detection rule — value pattern, call shape, or otherwise. Nothing about having *a* guard implies coverage of the *next* leak.
+
+**How to avoid it next time.** When adding a hardcoded-secret guard, ask explicitly: what shape would this class of leak take if it had no recognizable value pattern (a password, a PIN, a shared-network name)? For call-shaped secrets, match on the call site (`Function("literal", "literal", ...)`), not just on plausible-looking value literals. And don't let a single green guard run stand in for "this file has no secrets" — the #227 leak was in the exact file the #18 postmortem was written about, and nobody re-read that file for other leaks when writing the postmortem. A postmortem for one secret is also a prompt to sweep the same file for others.

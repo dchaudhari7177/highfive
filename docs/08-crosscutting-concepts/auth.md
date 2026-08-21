@@ -439,6 +439,20 @@ hostile rendering surface for any secret it has previously stored.
   filing as a separate UX issue if hobbyist deployment hits it.
 - **`Serial.println` of the saved password was redacted in #41.**
   Earlier versions printed the credential to USB serial during boot.
+- **`HOST_PASSWORD` is invisible to the hardcoded-secret guard by
+  construction, not oversight — and that's worth understanding, not
+  just noting.** `scripts/check-no-hardcoded-api-keys.sh` gained a
+  pattern in #227 for a *call-shaped* leak: a literal SSID or
+  passphrase passed directly into `WiFi.begin(...)`, the #227 incident
+  itself. `HOST_PASSWORD` is a *value-assignment* leak — a literal
+  bound to a named constant (`const char *HOST_PASSWORD = "esp-12345";`
+  at `host.cpp`'s top-of-file constants) and only later passed by
+  identifier into `WiFi.softAP(HOST_SSID, HOST_PASSWORD, 1, 0)`. A
+  call-shaped guard cannot see through the indirection to catch that.
+  It is intentionally committed and documented here, not a leak to
+  catch — but if this file is ever restructured to inline the PSK
+  directly into the `WiFi.softAP` call, the guard would need a fourth,
+  value-assignment-shaped pattern to notice.
 
 The `data-keep-current-on-empty` attribute is intentionally narrow:
 it pairs a JS validator skip with a server-side conditional

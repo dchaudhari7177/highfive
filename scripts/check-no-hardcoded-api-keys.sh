@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
-# Catch a hardcoded Google API key in source — the failure mode of
-# issue #18 (the Geolocation key that leaked because it was inlined as
-# a string literal in ESP32-CAM/esp_init.cpp). Run from `make
+# Catch a hardcoded Google API key, Discord webhook URL, or a
+# WiFi.begin() call carrying a literal SSID/passphrase — the failure
+# modes of issue #18 (the Geolocation key that leaked because it was
+# inlined as a string literal in ESP32-CAM/esp_init.cpp), the 2026-07
+# audit's Discord webhook default, and issue #227 (a commented-out
+# WiFi.begin(...) credential in the same file). Run from `make
 # check-no-hardcoded-api-keys` and the husky pre-push hook.
+#
+# The Wi-Fi pattern matches only this one call shape — it does not
+# catch a credential assigned to a variable (e.g. ESP32-CAM/host.cpp's
+# `const char *HOST_PASSWORD = "esp-12345";`, the captive portal's
+# intentional, documented AP PSK). Adding a guard for one leak's shape
+# does not imply coverage of the next one — see chapter 11's "A
+# secrets guard scoped to one leak's shape missed the next leak" for
+# why that matters here specifically.
 #
 # Google API keys start with `AIza` followed by 35 chars from the URL-
 # safe base64 alphabet (letters, digits, `-`, `_`). The pattern below
@@ -10,10 +21,11 @@
 # realistic key shape and won't false-positive on the prefix alone
 # appearing inside a longer English word.
 #
-# The canonical fix when this fires: revoke the key in the issuing
-# console, then route the value through the build-time injection
-# pattern documented in docs/08-crosscutting-concepts/auth.md
-# ("Third-party API keys: Geolocation").
+# The canonical fix, in all three cases: rotate/revoke the credential
+# at its source (Google Cloud console, Discord webhook settings, or
+# the affected Wi-Fi router — see each FAIL block below for specifics),
+# then remove the literal from the tree. Deleting the line alone never
+# mitigates a leak in a public repo: git history keeps it regardless.
 
 set -uo pipefail
 
@@ -28,12 +40,12 @@ pattern='AIza[0-9A-Za-z_-]{20,}'
 #
 # Why each entry is on the list:
 #   * scripts/check-no-hardcoded-api-keys.sh — this script itself
-#     contains the regex (line 23 above), which would obviously match.
-#   * docs/11-risks-and-technical-debt/README.md — the post-mortem
-#     entry for issue #18 doesn't quote the leaked literal today, but
-#     the file is allowlisted so a future post-mortem can quote a
-#     (revoked) key verbatim if that aids the lesson, without forcing
-#     a global allowlist edit at the same time.
+#     contains all three regexes above, which would obviously match.
+#   * docs/11-risks-and-technical-debt/README.md — the #227 postmortem
+#     already quotes the WiFi.begin("...", "...") shape as a placeholder
+#     example (matches wifi_pattern today), and the #18 entry may quote
+#     a revoked/rotated credential verbatim in future — allowlisted so
+#     neither forces a global allowlist edit.
 skip_files=(
   'scripts/check-no-hardcoded-api-keys.sh'
   'docs/11-risks-and-technical-debt/README.md'
@@ -90,5 +102,36 @@ if [[ -n "$webhook_hits" ]]; then
   exit 1
 fi
 
-echo "check-no-hardcoded-api-keys: OK — no Google API key or Discord webhook literals found."
+# Third pattern: WiFi.begin() with a literal SSID and/or a literal
+# passphrase — the passphrase is the actual secret, so a literal in
+# either argument position counts. Found in the 2026-08 audit as a
+# commented-out bench line, both arguments literal, in
+# ESP32-CAM/esp_init.cpp (issue #227). The config-driven form
+# WiFi.begin(wifi_config->SSID, wifi_config->PASSWORD) and the bare
+# WiFi.begin() do not match: neither argument is a double-quoted
+# string in either. Scope is deliberately narrow to this one call
+# shape — it does NOT cover a credential assigned to a variable (see
+# docs/08-crosscutting-concepts/auth.md "Captive-portal credential
+# handling" for the concrete gap), WiFiMulti.addAP(...), or an
+# Arduino F("...") literal. [[:space:]] (not \s) is used for POSIX
+# ERE portability across grep implementations.
+wifi_pattern='WiFi\.begin\([[:space:]]*("[^"]*"[[:space:]]*,|[^,]*,[[:space:]]*"[^"]*")'
+
+wifi_hits=$(git grep -nIE "$wifi_pattern" -- . "${skip_args[@]}" 2>/dev/null || true)
+
+if [[ -n "$wifi_hits" ]]; then
+  echo "check-no-hardcoded-api-keys: FAIL — literal SSID/passphrase in a WiFi.begin() call:"
+  echo ""
+  echo "$wifi_hits" | sed 's/^/  /'
+  echo ""
+  echo "  Treat this as a security incident, not a typo:"
+  echo "    1. Rotate the Wi-Fi password on the router that broadcasts that SSID."
+  echo "    2. Route credentials through the config-driven WiFi.begin(wifi_config->SSID,"
+  echo "       wifi_config->PASSWORD) path (captive-portal / NVS config) — never a literal."
+  echo "    3. Remove the literal from the working tree. The git history will still"
+  echo "       contain it — rotation is the only real mitigation."
+  exit 1
+fi
+
+echo "check-no-hardcoded-api-keys: OK — no Google API key, Discord webhook, or WiFi.begin() literal-credential calls found."
 exit 0

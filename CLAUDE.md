@@ -2,6 +2,15 @@
 
 Orientation for the **HiveHive** (a.k.a. `highfive`) bee-monitoring monorepo. Deeper context lives in the arc42 docs at [`docs/`](docs/) and in [`CONTRIBUTING.md`](CONTRIBUTING.md); this file does not duplicate them.
 
+## Immediate priority queue (self-removing)
+
+Highest-priority items from the 2026-08-18 repo audit (tracking epic #262), in the order to tackle them. **When you finish one, delete its entry in the same commit/PR that resolves it. When the list is empty, delete this whole section** — do not leave a stale "queue" around after the work is done.
+
+1. **#232 — No retained backup.** The only backup path gzips the live DuckDB file under the global write lock once a week and posts it to Discord — nothing is retained, nothing is off-host, no restore has ever been drilled. Irreversible-data-loss risk. Effort M.
+2. **#228 — Upload content validation.** `/upload` is credential-free by design and accepts file content with no magic-byte check, no dimension guard, and inconsistent extension/Content-Type handling. Effort M, medium risk.
+3. **#229 — Harden `/new_module` + `/heartbeat`.** Same internet-reachable, credential-free trust-boundary theme as #228: no-overwrite semantics, unknown-MAC drop, input clamps, nginx rate limits, stop logging raw bodies. Effort M–L, medium risk.
+4. **#231 — Firmware `setTimeout()` unit bug + portal/OTA deadline.** An arc42 doc currently certifies the timeout bug fixed; verify against `ESP32-CAM/client.cpp`/`esp_init.cpp` vs `ota.cpp` before trusting that claim. Needs a `SEQUENCE`-bumped release to actually ship — see [Cutting a firmware OTA release](#cutting-a-firmware-ota-release). Effort M + release.
+
 ## Project at a glance
 
 HiveHive monitors wild-bee nesting activity. ESP32-CAM modules upload images to a Python image service, a Python DuckDB service owns persistence, a Node/Express backend aggregates for the UI, and a React + Vite homepage renders dashboard, map, and setup wizard. Dev-side everything runs under `docker compose` on the shared bridge network `net`.
