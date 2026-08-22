@@ -135,6 +135,17 @@ services:
       # Optional: Discord alerts (registration, first image, silence watcher).
       # Empty disables sending — no baked-in default (2026-07 audit, for #201).
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      # Retained backup job (#232, ADR-031). Compose-side defaults here
+      # deliberately MIRROR the code's own fallbacks (services/backup.py
+      # DEFAULT_BACKUP_DIR / DEFAULT_BACKUP_KEEP) — `:-` is compose-side
+      # interpolation, so a blank .env.production line resolves the same
+      # way as leaving these unset; services/backup.py's own parsing
+      # additionally treats a present-but-empty value as unset, for the
+      # dev `env_file:` path where that distinction isn't compose-side
+      # interpolation. Set in .env.production only
+      # to override. See docker-compose.md "Backup retention".
+      - BACKUP_DIR=${BACKUP_DIR:-/data/backups}
+      - BACKUP_KEEP=${BACKUP_KEEP:-4}
     volumes:
       - duckdb_data:/data
     restart: unless-stopped
