@@ -46,17 +46,32 @@ docker compose logs <service-name>   # e.g. duckdb-service
 ```
 
 The most common cause is a missing or malformed `.env` file at the repo root.
-Recreate it from the template rather than hand-writing it:
+
+The **file itself is required**, even though none of the variables in it are.
+`docker-compose.yml` declares `env_file: .env` on `backend`, `image-service`
+and `duckdb-service`, and compose refuses to render the stack at all when that
+file is absent — no service starts, and every command fails the same way:
+
+```console
+$ docker compose config -q
+env file /path/to/highfive/.env not found: ...
+```
+
+(The text after `not found:` is the OS's own stat error, so it differs between
+Linux and Windows; the `env file … not found` prefix is the part to grep for.)
+
+Recreate the file from the template rather than hand-writing it:
 
 ```bash
 cp .env.example .env
 ```
 
-Note that no variable in it is actually *required* — `DEBUG` defaults to
-`false` and `DUCKDB_SERVICE_URL` defaults to the Docker service name — so a
-service that exits on a malformed `.env` is failing on a syntax error in the
-file, not on a missing value. `docker compose config` will show you the parse
-error.
+An **empty** `.env` is enough to boot the stack — every variable has a default
+(`DEBUG` is `false`, and `image-service` falls back to the Docker service name
+for `DUCKDB_SERVICE_URL`). This is why `scripts/check-duckdb-bind-claims.sh`
+creates a throwaway empty one in CI. So a service that exits *with* a `.env`
+present is failing on a syntax error in the file, not on a missing value —
+`docker compose config` will show you the parse error.
 
 ### `image-service` exits with `ImportError: libgomp.so.1: cannot open shared object file`
 
