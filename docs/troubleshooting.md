@@ -69,9 +69,21 @@ cp .env.example .env
 An **empty** `.env` is enough to boot the stack — every variable has a default
 (`DEBUG` is `false`, and `image-service` falls back to the Docker service name
 for `DUCKDB_SERVICE_URL`). This is why `scripts/check-duckdb-bind-claims.sh`
-creates a throwaway empty one in CI. So a service that exits *with* a `.env`
-present is failing on a syntax error in the file, not on a missing value —
-`docker compose config` will show you the parse error.
+creates a throwaway empty one in CI.
+
+So when a service exits and a `.env` is present, a *missing value* is not the
+cause. Which cause it is depends on how far the stack gets:
+
+```bash
+docker compose config -q          # does the configuration render at all?
+docker compose logs <service>     # if it does, why did the service stop?
+```
+
+If `docker compose config -q` fails, the `.env` has a syntax error and the
+command prints it. If it succeeds, the configuration is fine and the failure is
+at runtime — compose validation only proves that compose can parse and render
+the stack, never that the services can start. The `libgomp.so.1` case below is
+exactly that shape: a valid configuration and a service that still exits.
 
 ### `image-service` exits with `ImportError: libgomp.so.1: cannot open shared object file`
 
