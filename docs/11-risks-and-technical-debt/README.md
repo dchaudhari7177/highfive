@@ -248,11 +248,12 @@ canonical description of itself — docs link to it, they do not restate it.
 `.env.example` now documents each variable and which service reads it, and
 the four docs point at it. Worth noting what the restatements had actually
 drifted into: `troubleshooting.md` claimed `DEBUG` and `DUCKDB_SERVICE_URL`
-were required "at minimum", when `image-service/app.py`'s and
-`duckdb-service/app.py`'s `os.getenv("DEBUG", "false")` and
-`os.getenv("DUCKDB_SERVICE_URL", "http://duckdb-service:8000")` mean both
-are optional — so the one doc a stuck contributor reaches for was sending
-them to fix a non-problem.
+were required "at minimum", when both are optional in the code that reads
+them — `os.getenv("DEBUG", "false")` in both `image-service/app.py` and
+`duckdb-service/app.py`, and `os.getenv("DUCKDB_SERVICE_URL",
+"http://duckdb-service:8000")` in `image-service/app.py`, which is the only
+service that reads that one. So the one doc a stuck contributor reaches for
+was sending them to fix a non-problem.
 
 ### Probing a production host with guessed SSH usernames gets your IP banned — and the ban looks exactly like an outage
 

@@ -26,7 +26,10 @@ cp .env.example .env
 
 Compose loads that file into `backend`, `image-service` and
 `duckdb-service`. Every variable in it is optional — the stack boots on the
-defaults — so editing it is only needed if you want your own admin password.
+defaults, so no edits are needed to get started. Edit it when you want your own
+credentials or notifications: a custom admin password, or a
+`DISCORD_WEBHOOK_URL` to receive alerts in development. `.env.example`
+documents each variable and which service reads it.
 
 Then:
 
