@@ -79,11 +79,14 @@ docker compose config -q          # does the configuration render at all?
 docker compose logs <service>     # if it does, why did the service stop?
 ```
 
-If `docker compose config -q` fails, the `.env` has a syntax error and the
-command prints it. If it succeeds, the configuration is fine and the failure is
-at runtime — compose validation only proves that compose can parse and render
-the stack, never that the services can start. The `libgomp.so.1` case below is
-exactly that shape: a valid configuration and a service that still exits.
+If `docker compose config -q` fails, the error names the cause — a `.env`
+parse error is the common one, but the same command also fails on a YAML error
+in the compose file, an unresolvable `${VAR:?...}` interpolation, or another
+missing `env_file`. Read what it printed rather than assuming. If it succeeds,
+the configuration is fine and the failure is at runtime — compose validation
+only proves that compose can parse and render the stack, never that the
+services can start. The `libgomp.so.1` case below is exactly that shape: a
+valid configuration and a service that still exits.
 
 ### `image-service` exits with `ImportError: libgomp.so.1: cannot open shared object file`
 
